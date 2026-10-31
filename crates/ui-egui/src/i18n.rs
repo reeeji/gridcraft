@@ -235,8 +235,10 @@ impl Language {
     }
 
     /// Translates known fixed or templated diagnostics after removing engine command wrappers.
-    /// Unrecognized messages retain their cleaned text, and captured user data stays literal.
+    /// Unmatched parameter errors retain their command context; other command wrappers are cleaned.
+    /// Captured user data stays literal.
     pub(crate) fn tr_error(self, message: &str) -> String {
+        let original_parameters = message.starts_with("invalid parameters for `").then_some(message);
         let message = if message.starts_with("command `") || message.starts_with("invalid parameters for `") {
             crate::clean_error(message)
         } else {
@@ -249,7 +251,7 @@ impl Language {
         if translated != fallback {
             return translated.to_owned();
         }
-        error_templates::format_message(&message, self).unwrap_or(message)
+        error_templates::format_message(&message, self).unwrap_or_else(|| original_parameters.map_or(message, str::to_owned))
     }
 
     /// A worksheet function's description in this language, looked up by the English text of the
@@ -547,6 +549,21 @@ mod tests {
 #[cfg(test)]
 mod russian_tests {
     use super::*;
+    /// Unknown parameter errors retain the engine's command context without affecting translated details.
+    #[test]
+    fn unmatched_parameter_errors_keep_the_command_context() {
+        let mut session = gridcraft_engine::Session::new();
+        session.new_workbook();
+        let error = session.execute("data.showLevels", serde_json::json!({})).unwrap_err().to_string();
+        assert!(error.starts_with("invalid parameters for `data.showLevels`: "), "{error}");
+        for language in [Language::En, Language::Ru] {
+            assert_eq!(language.tr_error(&error), error);
+            assert_eq!(language.tr_error("command `data.showLevels`: Untranslated outline failure {value}"), "Untranslated outline failure {value}");
+        }
+        assert_eq!(Language::Ru.tr_error("invalid parameters for `chart`: Select a chart first."), Language::Ru.tr("Select a chart first."));
+        assert_eq!(Language::Ru.tr_error("invalid parameters for `cell.set`: missing `cell`"), "Не указан параметр `cell`");
+    }
+
     /// Checks Russian diagnostics remove command wrappers while preserving captured names and unknown messages.
     #[test]
     fn russian_error_messages_preserve_data_and_clean_command_wrappers() {
