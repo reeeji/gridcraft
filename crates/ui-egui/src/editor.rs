@@ -281,9 +281,15 @@ impl EditState {
 /// References in formula text with their byte spans and colour index (same reference text ⇒
 /// same colour), for colouring the editor and outlining ranges on the grid.
 pub fn formula_refs(text: &str) -> Vec<(usize, usize, RangeRef, Option<String>, usize)> {
+    formula_refs_in(text, gridcraft_engine::formula::FormulaLocale::En)
+}
+
+/// Finds reference spans in the draft's formula language, preserving original UTF-8 byte offsets.
+/// Localized errors and separators must not prevent reference colouring or point-mode outlines.
+pub fn formula_refs_in(text: &str, locale: gridcraft_engine::formula::FormulaLocale) -> Vec<(usize, usize, RangeRef, Option<String>, usize)> {
     let body = text.strip_prefix('=').or_else(|| text.strip_prefix('+')).unwrap_or(text);
     let offset = text.len() - body.len();
-    let Ok(toks) = gridcraft_engine::formula::lexer::tokenize(body) else { return vec![] };
+    let Ok(toks) = gridcraft_engine::formula::lexer::tokenize_locale(body, locale) else { return vec![] };
     let mut out: Vec<(usize, usize, RangeRef, Option<String>, usize)> = Vec::new();
     let mut seen: Vec<String> = Vec::new();
     let mut i = 0;

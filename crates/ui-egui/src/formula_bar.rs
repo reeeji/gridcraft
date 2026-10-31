@@ -4,7 +4,7 @@ use egui::{FontId, Key, Rect, Sense, Stroke, StrokeKind, TextEdit, pos2, vec2};
 use serde_json::json;
 
 use crate::SheetApp;
-use crate::editor::formula_refs;
+use crate::editor::formula_refs_in;
 use crate::icons::{self, Icon};
 use crate::theme::{self, Tokens};
 
@@ -300,7 +300,7 @@ pub fn editor_widget(app: &mut SheetApp, ui: &mut egui::Ui, id: egui::Id, font: 
     let has_focus = focused == Some(id) || (mine && (ed.request_focus || focused.is_none()));
     let EditorKeyOutcome { action, arrow, cancel } = editor_shortcuts(app, ui, id, &mut ed, mine, has_focus);
     // The text widget.
-    let refs = formula_refs(&ed.text);
+    let refs = formula_refs_in(&ed.text, ed.locale);
     let t = Tokens::get(ui.ctx());
     let on_sheet = id == egui::Id::unique("gridcraft.cell_editor");
     let cell_text_color = if on_sheet { t.cell_text } else { t.text };
@@ -520,9 +520,23 @@ fn editor_arrow_keys(
     ed: &mut crate::editor::EditState,
     mut action: Option<EditorAction>,
 ) -> (Option<EditorAction>, bool) {
-    let (up, down, left, right, shift) = ui.input(|i| {
-        (i.key_pressed(Key::ArrowUp), i.key_pressed(Key::ArrowDown), i.key_pressed(Key::ArrowLeft), i.key_pressed(Key::ArrowRight), i.modifiers.shift)
+    // The modifiers come with the key event: an arrow pressed and released within one frame (a
+    // control client's or an automation tool's keystroke) has already lost them from `i.modifiers`.
+    let arrow = ui.input(|i| {
+        i.events.iter().find_map(|e| match e {
+            egui::Event::Key { key: key @ (Key::ArrowUp | Key::ArrowDown | Key::ArrowLeft | Key::ArrowRight), pressed: true, modifiers, .. } => {
+                Some((*key, *modifiers))
+            }
+            _ => None,
+        })
     });
+    let (up, down, left, right) = (
+        arrow.is_some_and(|(k, _)| k == Key::ArrowUp),
+        arrow.is_some_and(|(k, _)| k == Key::ArrowDown),
+        arrow.is_some_and(|(k, _)| k == Key::ArrowLeft),
+        arrow.is_some_and(|(k, _)| k == Key::ArrowRight),
+    );
+    let (shift, jump) = arrow.map_or((false, false), |(_, m)| (m.shift, m.command));
     if (up || down) && !ed.autocomplete.is_empty() {
         ui.input_mut(|i| {
             i.consume_key(egui::Modifiers::NONE, Key::ArrowUp);
@@ -547,13 +561,18 @@ fn editor_arrow_keys(
     let rtl = app.session.active().and_then(|d| d.wb.active()).is_some_and(|s| s.right_to_left);
     let dc = if rtl { -dc } else { dc };
     if ed.can_point() {
+        // Ctrl+arrow (⌘arrow) jumps the pointed cell to the edge of its data, Ctrl+Shift+arrow
+        // extends the pointed range there, as the same keys do on the selection.
         ui.input_mut(|i| {
             for key in [Key::ArrowUp, Key::ArrowDown, Key::ArrowLeft, Key::ArrowRight] {
-                i.consume_key(egui::Modifiers::NONE, key);
-                i.consume_key(egui::Modifiers::SHIFT, key);
+                for modifiers in
+                    [egui::Modifiers::NONE, egui::Modifiers::SHIFT, egui::Modifiers::COMMAND, egui::Modifiers::COMMAND | egui::Modifiers::SHIFT]
+                {
+                    i.consume_key(modifiers, key);
+                }
             }
         });
-        crate::grid::point_move(app, ed, dr, dc, shift);
+        crate::grid::point_move(app, ed, dr, dc, shift, jump);
         (action, false)
     } else {
         action = Some((dr, dc, false, false));
@@ -588,7 +607,7 @@ fn editor_other_shortcuts(app: &mut SheetApp, ui: &mut egui::Ui, id: egui::Id, e
 
 fn cycle_anchor(ed: &mut crate::editor::EditState) {
     let caret_b = ed.text.char_indices().nth(ed.caret).map(|(i, _)| i).unwrap_or(ed.text.len());
-    for (a, b, ..) in formula_refs(&ed.text) {
+    for (a, b, ..) in formula_refs_in(&ed.text, ed.locale) {
         if a <= caret_b && caret_b <= b {
             let Some(r) = ed.text.get(a..b) else { return };
             let cycled: String = r

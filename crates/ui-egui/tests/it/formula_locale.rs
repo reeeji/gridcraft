@@ -16,6 +16,27 @@ fn app() -> SheetApp {
 fn formula(app: &SheetApp) -> String {
     app.session.active().unwrap().wb.active().unwrap().cell(CellRef::new(0, 0)).unwrap().formula.as_ref().unwrap().text.to_string()
 }
+
+/// Localized error literals do not hide reference spans used by colouring, F4 and point mode.
+#[test]
+fn localized_errors_preserve_reference_spans_in_the_draft_language() {
+    use gridcraft_engine::formula::FormulaLocale;
+    use gridcraft_ui_egui::editor::{formula_refs, formula_refs_in};
+    let source = "=ЕСЛИОШИБКА(#ССЫЛКА!;СУММ(A1;B2:C3;1,5;{1\\2;3\\4};'Лист'!A1))";
+    let refs = formula_refs_in(source, FormulaLocale::Ru);
+    assert_eq!(refs.iter().map(|r| r.2.a1()).collect::<Vec<_>>(), ["A1", "B2:C3", "A1"]);
+    assert_eq!(refs.iter().map(|r| &source[r.0..r.1]).collect::<Vec<_>>(), ["A1", "B2:C3", "'Лист'!A1"]);
+    assert_eq!(refs.last().unwrap().3.as_deref(), Some("Лист"));
+    // Changing the interface does not change an existing draft's captured syntax.
+    let mut app = app();
+    app.run("app.language.set", json!({"language":"ru"})).unwrap();
+    app.begin_edit(Some(source.to_string()), false);
+    app.run("app.language.set", json!({"language":"en"})).unwrap();
+    let draft = app.editor.as_ref().unwrap();
+    assert_eq!(formula_refs_in(&draft.text, draft.locale), refs);
+    let english = "=IFERROR(#REF!,A1+B2:C3)";
+    assert_eq!(formula_refs(english), formula_refs_in(english, FormulaLocale::En));
+}
 fn enter(app: &mut SheetApp, text: &str) -> bool {
     app.begin_edit(Some(text.into()), false);
     app.commit_edit(0, 0, false, false)
@@ -138,6 +159,15 @@ fn locale_preserves_text_cells_and_existing_entry_conveniences() {
     assert_eq!(app.session.active().unwrap().wb.active().unwrap().value(CellRef::new(0, 0)), Value::text("=SUM(1,2)"));
     app.begin_edit(None, true);
     assert_eq!(app.editor.as_ref().unwrap().text, "=SUM(1,2)");
+}
+
+#[test]
+fn empty_cell_autosum_places_caret_inside_parentheses() {
+    let mut app = app();
+    app.run("formulas.autoSum", json!({"enter": false})).unwrap();
+    let ed = app.editor.as_ref().unwrap();
+    assert_eq!(ed.text, "=SUM()");
+    assert_eq!(ed.caret, ed.text.chars().count() - 1);
 }
 
 #[test]
